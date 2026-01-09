@@ -136,4 +136,38 @@ describe("fetchRepoContext", () => {
       expect(result.error.code).toBe("CANCELLED");
     }
   });
+
+  it("times out if file body read hangs", async () => {
+    vi.useFakeTimers();
+    const mockFetch = globalThis.fetch as any;
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse({ default_branch: "main", description: "Demo" }, 200))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          truncated: false,
+          tree: [{ path: "README.md", type: "blob", size: 20 }],
+        }),
+      )
+      .mockResolvedValueOnce({
+        ok: true,
+        headers: { get: () => null },
+        text: () => new Promise(() => {}),
+      });
+
+    const promise = fetchRepoContext("https://github.com/vercel/next.js", {
+      maxFiles: 1,
+      maxBytes: 200,
+      maxFileBytes: 100,
+      maxDepth: 4,
+      timeoutMs: 10,
+    });
+    await vi.advanceTimersByTimeAsync(10);
+
+    const result = await promise;
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("TIMEOUT");
+    }
+    vi.useRealTimers();
+  });
 });

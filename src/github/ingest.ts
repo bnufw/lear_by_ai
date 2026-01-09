@@ -288,12 +288,20 @@ async function fetchSelectedFiles(
 ): Promise<GitHubResult<{ files: RepoFile[]; skippedByFetch: number }>> {
   const files: RepoFile[] = [];
   let skippedByFetch = 0;
+  let lastError: GitHubError | null = null;
+  let hadTimeout = false;
+  let hadCancelled = false;
+  let hadRateLimited = false;
 
   for (const file of selected) {
     const rawUrl = `https://raw.githubusercontent.com/${repo.owner}/${repo.repo}/${encodeURIComponent(branch)}/${encodePath(file.path)}`;
     const text = await fetchText(rawUrl, options.maxFileBytes, options.timeoutMs, options.signal);
     if (!text.ok) {
       skippedByFetch += 1;
+      lastError = text.error;
+      if (text.error.code === "TIMEOUT") hadTimeout = true;
+      if (text.error.code === "CANCELLED") hadCancelled = true;
+      if (text.error.code === "RATE_LIMITED") hadRateLimited = true;
       continue;
     }
     files.push({
@@ -306,6 +314,10 @@ async function fetchSelectedFiles(
   }
 
   if (!files.length) {
+    if (hadCancelled) return { ok: false, error: { code: "CANCELLED", message: "GitHub request cancelled" } };
+    if (hadRateLimited) return { ok: false, error: { code: "RATE_LIMITED", message: "GitHub rate limit exceeded" } };
+    if (hadTimeout) return { ok: false, error: { code: "TIMEOUT", message: "GitHub request timed out" } };
+    if (lastError) return { ok: false, error: lastError };
     return { ok: false, error: { code: "REPO_TOO_LARGE", message: "Failed to fetch any files" } };
   }
 
@@ -313,40 +325,65 @@ async function fetchSelectedFiles(
 }
 
 async function fetchJson<T>(url: string, timeoutMs: number, signal?: AbortSignal): Promise<GitHubResult<T>> {
-  const response = await fetchWithTimeout(url, timeoutMs, {
-    headers: { Accept: "application/vnd.github+json" },
-    signal,
+  return fetchAndRead(url, timeoutMs, { headers: { Accept: "application/vnd.github+json" }, signal }, async (response, abortSignal) => {
+    try {
+      const data = await raceWithAbort(response.json(), abortSignal);
+      return { ok: true, value: data as T };
+    } catch (error: any) {
+      if (error?.name === "AbortError") throw error;
+      return { ok: true, value: {} as T };
+    }
   });
-  if (!response.ok) return response;
-
-  const json = (await response.value.json().catch(() => ({}))) as T;
-  return { ok: true, value: json };
 }
 
 async function fetchText(url: string, maxBytes: number, timeoutMs: number, signal?: AbortSignal): Promise<GitHubResult<string>> {
-  const response = await fetchWithTimeout(url, timeoutMs, { signal });
-  if (!response.ok) return response;
+  return fetchAndRead(url, timeoutMs, { signal }, async (response, abortSignal) => {
+    const lengthHeader = response.headers.get("content-length");
+    if (lengthHeader && Number(lengthHeader) > maxBytes) {
+      return { ok: false, error: { code: "REPO_TOO_LARGE", message: "File exceeds size limit" } };
+    }
 
-  const lengthHeader = response.value.headers.get("content-length");
-  if (lengthHeader && Number(lengthHeader) > maxBytes) {
-    return { ok: false, error: { code: "REPO_TOO_LARGE", message: "File exceeds size limit" } };
-  }
-
-  const text = await response.value.text();
-  if (text.length > maxBytes) {
-    return { ok: false, error: { code: "REPO_TOO_LARGE", message: "File exceeds size limit" } };
-  }
-  return { ok: true, value: text };
+    const text = await raceWithAbort(response.text(), abortSignal);
+    if (text.length > maxBytes) {
+      return { ok: false, error: { code: "REPO_TOO_LARGE", message: "File exceeds size limit" } };
+    }
+    return { ok: true, value: text };
+  });
 }
 
-async function fetchWithTimeout(
+function makeAbortError(): Error {
+  const error = new Error("Aborted");
+  (error as any).name = "AbortError";
+  return error;
+}
+
+function abortPromise(signal: AbortSignal): Promise<never> {
+  return new Promise((_, reject) => {
+    if (signal.aborted) {
+      reject(makeAbortError());
+      return;
+    }
+    signal.addEventListener("abort", () => reject(makeAbortError()), { once: true });
+  });
+}
+
+async function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  return await Promise.race([promise, abortPromise(signal)]);
+}
+
+async function fetchAndRead<T>(
   url: string,
   timeoutMs: number,
   init: RequestInit,
-): Promise<GitHubResult<Response>> {
+  read: (response: Response, abortSignal: AbortSignal) => Promise<GitHubResult<T>>,
+): Promise<GitHubResult<T>> {
   const externalSignal = init.signal;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let didTimeout = false;
+  const timeout = setTimeout(() => {
+    didTimeout = true;
+    controller.abort();
+  }, timeoutMs);
 
   try {
     if (externalSignal) {
@@ -356,18 +393,22 @@ async function fetchWithTimeout(
 
     const response = await fetch(url, { ...init, signal: controller.signal });
     if (!response.ok) {
-      const message = await safeReadMessage(response);
-      return { ok: false, error: mapGitHubError(response, message) };
+      const message = await safeReadMessage(response, controller.signal);
+      return { ok: false, error: mapGitHubError(response, message) } as GitHubResult<T>;
     }
-    return { ok: true, value: response };
+
+    return await read(response, controller.signal);
   } catch (error: any) {
     if (error?.name === "AbortError") {
       if (externalSignal?.aborted) {
-        return { ok: false, error: { code: "CANCELLED", message: "GitHub request cancelled" } };
+        return { ok: false, error: { code: "CANCELLED", message: "GitHub request cancelled" } } as GitHubResult<T>;
       }
-      return { ok: false, error: { code: "TIMEOUT", message: "GitHub request timed out" } };
+      if (didTimeout) {
+        return { ok: false, error: { code: "TIMEOUT", message: "GitHub request timed out" } } as GitHubResult<T>;
+      }
+      return { ok: false, error: { code: "TIMEOUT", message: "GitHub request timed out" } } as GitHubResult<T>;
     }
-    return { ok: false, error: { code: "FETCH_FAILED", message: "Network request failed" } };
+    return { ok: false, error: { code: "FETCH_FAILED", message: "Network request failed" } } as GitHubResult<T>;
   } finally {
     clearTimeout(timeout);
   }
@@ -387,9 +428,9 @@ function mapGitHubError(response: Response, message: string): GitHubError {
   return { code: "FETCH_FAILED", message: `GitHub request failed (${response.status})` };
 }
 
-async function safeReadMessage(response: Response): Promise<string> {
+async function safeReadMessage(response: Response, abortSignal: AbortSignal): Promise<string> {
   try {
-    const data = await response.clone().json();
+    const data = await raceWithAbort(response.clone().json(), abortSignal);
     if (data && typeof data.message === "string") return data.message;
   } catch {
     // ignore
