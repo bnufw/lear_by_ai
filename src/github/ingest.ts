@@ -141,6 +141,11 @@ type SelectionResult = GitHubResult<{
   warnings: string[];
 }>;
 
+type RepoInfo = {
+  defaultBranch: string;
+  description?: string;
+};
+
 export async function fetchRepoContext(
   input: string | GitHubRepoRef,
   options: RepoIngestOptions = {},
@@ -188,10 +193,10 @@ export async function fetchRepoContext(
   };
 }
 
-async function fetchRepoInfo(repo: GitHubRepoRef, timeoutMs: number) {
+async function fetchRepoInfo(repo: GitHubRepoRef, timeoutMs: number): Promise<GitHubResult<RepoInfo>> {
   const url = `https://api.github.com/repos/${repo.owner}/${repo.repo}`;
   const response = await fetchJson<GitHubRepoApiResponse>(url, timeoutMs);
-  if (!response.ok) return response;
+  if (response.ok === false) return { ok: false, error: response.error };
 
   const defaultBranch = response.value.default_branch;
   if (!defaultBranch) {
@@ -202,19 +207,17 @@ async function fetchRepoInfo(repo: GitHubRepoRef, timeoutMs: number) {
     return { ok: false, error: { code: "NOT_PUBLIC", message: "Private repositories are not supported" } };
   }
 
-  return {
-    ok: true,
-    value: {
-      defaultBranch,
-      description: response.value.description ?? undefined,
-    },
-  };
+  return { ok: true, value: { defaultBranch, description: response.value.description ?? undefined } };
 }
 
-async function fetchRepoTree(repo: GitHubRepoRef, branch: string, timeoutMs: number) {
+async function fetchRepoTree(
+  repo: GitHubRepoRef,
+  branch: string,
+  timeoutMs: number,
+): Promise<GitHubResult<GitTreeEntry[]>> {
   const url = `https://api.github.com/repos/${repo.owner}/${repo.repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`;
   const response = await fetchJson<GitTreeResponse>(url, timeoutMs);
-  if (!response.ok) return response;
+  if (response.ok === false) return { ok: false, error: response.error };
 
   if (response.value.truncated) {
     return { ok: false, error: { code: "REPO_TOO_LARGE", message: "Repo tree is too large to ingest safely" } };

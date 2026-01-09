@@ -1,5 +1,6 @@
 import "fake-indexeddb/auto";
 import { beforeEach, describe, expect, it } from "vitest";
+import { type Session } from "../../domain/models";
 import { SCHEMA_VERSION } from "../../lib/schema/learning";
 import {
   clearAll,
@@ -23,7 +24,7 @@ const baseSession = {
   },
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
-};
+} satisfies Session;
 
 beforeEach(async () => {
   await resetStorageForTests();
@@ -67,4 +68,3 @@ describe("storage", () => {
     }
   });
 });
-

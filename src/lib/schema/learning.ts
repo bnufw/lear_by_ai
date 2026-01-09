@@ -1,4 +1,4 @@
-import { z, type ZodError, type ZodIssue } from "zod";
+import { z, type ZodError, type ZodIssue, type ZodTypeDef } from "zod";
 
 export const SCHEMA_VERSION = 1 as const;
 export const SchemaVersionSchema = z.literal(SCHEMA_VERSION);
@@ -147,11 +147,13 @@ export function formatZodError(error: ZodError): string {
     .join("; ");
 }
 
-export function safeParseSchema<T>(schema: z.ZodType<T>, input: unknown): SchemaParseResult<T> {
+export function safeParseSchema<TOutput, TInput>(
+  schema: z.ZodType<TOutput, ZodTypeDef, TInput>,
+  input: unknown,
+): SchemaParseResult<TOutput> {
   const result = schema.safeParse(input);
   if (result.success) {
     return { ok: true, data: result.data };
   }
   return { ok: false, error: formatZodError(result.error), issues: result.error.issues };
 }
-
