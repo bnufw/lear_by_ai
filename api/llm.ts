@@ -168,7 +168,9 @@ export default async function handler(req: any, res: any) {
   if (!messages) return badRequest(res, requestId, "Provide either {prompt} or {messages}");
 
   const parsed = validateMessages(messages);
-  if (!parsed.ok) return badRequest(res, requestId, parsed.error);
+  if (parsed.ok === false) {
+    return badRequest(res, requestId, parsed.error);
+  }
 
   const systemInstruction = extractSystemInstruction({ ...request, messages: parsed.value });
   if (systemInstruction && !safeTextLength(systemInstruction, MAX_SYSTEM_CHARS)) {
