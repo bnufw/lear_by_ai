@@ -37,6 +37,7 @@ export type RepoIngestOptions = {
   maxFileBytes?: number;
   maxDepth?: number;
   timeoutMs?: number;
+  signal?: AbortSignal;
 };
 
 export type GitHubErrorCode =
@@ -46,7 +47,8 @@ export type GitHubErrorCode =
   | "REPO_TOO_LARGE"
   | "NOT_PUBLIC"
   | "FETCH_FAILED"
-  | "TIMEOUT";
+  | "TIMEOUT"
+  | "CANCELLED";
 
 export type GitHubError = {
   code: GitHubErrorCode;

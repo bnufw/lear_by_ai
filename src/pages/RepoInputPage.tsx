@@ -1,21 +1,16 @@
 import { FormEvent, useMemo, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { useSession } from "../app/session";
+import { parseGitHubRepoUrl } from "../github/ingest";
 
 function normalizeRepoUrl(input: string): string | null {
-  const trimmed = input.trim();
-  if (!trimmed) return null;
-  try {
-    const url = new URL(trimmed);
-    if (url.hostname !== "github.com") return null;
-    const parts = url.pathname.split("/").filter(Boolean);
-    if (parts.length < 2) return null;
-    return `https://github.com/${parts[0]}/${parts[1]}`;
-  } catch {
-    return null;
-  }
+  const parsed = parseGitHubRepoUrl(input);
+  if (!parsed.ok) return null;
+  return parsed.value.url;
 }
 
 export default function RepoInputPage() {
+  const { session, recentSessions, recentSessionsStatus } = useSession();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const initialRepo = searchParams.get("repo") ?? "";
@@ -62,9 +57,37 @@ export default function RepoInputPage() {
           <button className="button" type="submit" disabled={!canContinue}>
             Generate plan
           </button>
+          {!session ? null : (
+            <Link className="button" to={`/plan?session=${encodeURIComponent(session.id)}`}>
+              Resume
+            </Link>
+          )}
         </div>
       </form>
+
+      <div className="card stack">
+        <div className="row row-between">
+          <div>
+            <div className="label">Recent sessions</div>
+            <p className="muted small">本地 IndexedDB 保存（无账号 / 无云同步）。</p>
+          </div>
+        </div>
+
+        {recentSessionsStatus === "loading" ? (
+          <p className="muted">Loading…</p>
+        ) : !recentSessions.length ? (
+          <p className="muted">还没有历史会话。</p>
+        ) : (
+          <ul className="list">
+            {recentSessions.map((s) => (
+              <li key={s.id}>
+                <Link to={`/plan?session=${encodeURIComponent(s.id)}`}>{s.repo.url}</Link>{" "}
+                <span className="muted small">({new Date(s.updatedAt).toLocaleString()})</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </section>
   );
 }
-

@@ -26,7 +26,9 @@ type GitTreeResponse = {
   tree?: GitTreeEntry[];
 };
 
-const DEFAULT_OPTIONS: Required<RepoIngestOptions> = {
+type ResolvedRepoIngestOptions = Required<Omit<RepoIngestOptions, "signal">> & { signal?: AbortSignal };
+
+const DEFAULT_OPTIONS: ResolvedRepoIngestOptions = {
   maxFiles: 28,
   maxBytes: 240_000,
   maxFileBytes: 60_000,
@@ -155,12 +157,12 @@ export async function fetchRepoContext(
   if (resolved.ok === false) return { ok: false, error: resolved.error };
 
   const repo = resolved.value;
-  const config = { ...DEFAULT_OPTIONS, ...options };
+  const config: ResolvedRepoIngestOptions = { ...DEFAULT_OPTIONS, ...options };
 
-  const repoInfo = await fetchRepoInfo(repo, config.timeoutMs);
+  const repoInfo = await fetchRepoInfo(repo, config.timeoutMs, config.signal);
   if (repoInfo.ok === false) return { ok: false, error: repoInfo.error };
 
-  const tree = await fetchRepoTree(repo, repoInfo.value.defaultBranch, config.timeoutMs);
+  const tree = await fetchRepoTree(repo, repoInfo.value.defaultBranch, config.timeoutMs, config.signal);
   if (tree.ok === false) return { ok: false, error: tree.error };
 
   const selection = selectRepoFiles(tree.value, config);
@@ -193,9 +195,9 @@ export async function fetchRepoContext(
   };
 }
 
-async function fetchRepoInfo(repo: GitHubRepoRef, timeoutMs: number): Promise<GitHubResult<RepoInfo>> {
+async function fetchRepoInfo(repo: GitHubRepoRef, timeoutMs: number, signal?: AbortSignal): Promise<GitHubResult<RepoInfo>> {
   const url = `https://api.github.com/repos/${repo.owner}/${repo.repo}`;
-  const response = await fetchJson<GitHubRepoApiResponse>(url, timeoutMs);
+  const response = await fetchJson<GitHubRepoApiResponse>(url, timeoutMs, signal);
   if (response.ok === false) return { ok: false, error: response.error };
 
   const defaultBranch = response.value.default_branch;
@@ -214,9 +216,10 @@ async function fetchRepoTree(
   repo: GitHubRepoRef,
   branch: string,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<GitHubResult<GitTreeEntry[]>> {
   const url = `https://api.github.com/repos/${repo.owner}/${repo.repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`;
-  const response = await fetchJson<GitTreeResponse>(url, timeoutMs);
+  const response = await fetchJson<GitTreeResponse>(url, timeoutMs, signal);
   if (response.ok === false) return { ok: false, error: response.error };
 
   if (response.value.truncated) {
@@ -227,7 +230,7 @@ async function fetchRepoTree(
   return { ok: true, value: tree };
 }
 
-function selectRepoFiles(tree: GitTreeEntry[], options: Required<RepoIngestOptions>): SelectionResult {
+function selectRepoFiles(tree: GitTreeEntry[], options: ResolvedRepoIngestOptions): SelectionResult {
   const candidates = tree.filter((entry) => entry.type === "blob" && Boolean(entry.path));
   const scored = [];
   let skippedCount = 0;
@@ -281,14 +284,14 @@ async function fetchSelectedFiles(
   repo: GitHubRepoRef,
   branch: string,
   selected: Array<{ path: string; size: number; category: RepoFileCategory }>,
-  options: Required<RepoIngestOptions>,
+  options: ResolvedRepoIngestOptions,
 ): Promise<GitHubResult<{ files: RepoFile[]; skippedByFetch: number }>> {
   const files: RepoFile[] = [];
   let skippedByFetch = 0;
 
   for (const file of selected) {
     const rawUrl = `https://raw.githubusercontent.com/${repo.owner}/${repo.repo}/${encodeURIComponent(branch)}/${encodePath(file.path)}`;
-    const text = await fetchText(rawUrl, options.maxFileBytes, options.timeoutMs);
+    const text = await fetchText(rawUrl, options.maxFileBytes, options.timeoutMs, options.signal);
     if (!text.ok) {
       skippedByFetch += 1;
       continue;
@@ -309,9 +312,10 @@ async function fetchSelectedFiles(
   return { ok: true, value: { files, skippedByFetch } };
 }
 
-async function fetchJson<T>(url: string, timeoutMs: number): Promise<GitHubResult<T>> {
+async function fetchJson<T>(url: string, timeoutMs: number, signal?: AbortSignal): Promise<GitHubResult<T>> {
   const response = await fetchWithTimeout(url, timeoutMs, {
     headers: { Accept: "application/vnd.github+json" },
+    signal,
   });
   if (!response.ok) return response;
 
@@ -319,8 +323,8 @@ async function fetchJson<T>(url: string, timeoutMs: number): Promise<GitHubResul
   return { ok: true, value: json };
 }
 
-async function fetchText(url: string, maxBytes: number, timeoutMs: number): Promise<GitHubResult<string>> {
-  const response = await fetchWithTimeout(url, timeoutMs, {});
+async function fetchText(url: string, maxBytes: number, timeoutMs: number, signal?: AbortSignal): Promise<GitHubResult<string>> {
+  const response = await fetchWithTimeout(url, timeoutMs, { signal });
   if (!response.ok) return response;
 
   const lengthHeader = response.value.headers.get("content-length");
@@ -340,10 +344,16 @@ async function fetchWithTimeout(
   timeoutMs: number,
   init: RequestInit,
 ): Promise<GitHubResult<Response>> {
+  const externalSignal = init.signal;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
+    if (externalSignal) {
+      if (externalSignal.aborted) controller.abort();
+      else externalSignal.addEventListener("abort", () => controller.abort(), { once: true });
+    }
+
     const response = await fetch(url, { ...init, signal: controller.signal });
     if (!response.ok) {
       const message = await safeReadMessage(response);
@@ -352,6 +362,9 @@ async function fetchWithTimeout(
     return { ok: true, value: response };
   } catch (error: any) {
     if (error?.name === "AbortError") {
+      if (externalSignal?.aborted) {
+        return { ok: false, error: { code: "CANCELLED", message: "GitHub request cancelled" } };
+      }
       return { ok: false, error: { code: "TIMEOUT", message: "GitHub request timed out" } };
     }
     return { ok: false, error: { code: "FETCH_FAILED", message: "Network request failed" } };

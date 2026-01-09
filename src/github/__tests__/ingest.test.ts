@@ -125,4 +125,15 @@ describe("fetchRepoContext", () => {
       expect(result.value.repo.defaultBranch).toBe("main");
     }
   });
+
+  it("supports cancellation via AbortSignal", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    (globalThis.fetch as any).mockRejectedValueOnce({ name: "AbortError" });
+    const result = await fetchRepoContext("https://github.com/vercel/next.js", { signal: controller.signal });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("CANCELLED");
+    }
+  });
 });
