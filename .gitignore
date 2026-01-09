@@ -28,3 +28,9 @@ htmlcov/
 *.log
 tmp/
 .claude_home/
+
+# Node / Vite
+node_modules/
+dist/
+.vite/
+.pnpm-store/
