@@ -1,4 +1,5 @@
-import { SessionSchema, safeParseSchema, type Session } from "../lib/schema/learning";
+import { type Session } from "../domain/models";
+import { SessionSchema, safeParseSchema } from "../lib/schema/learning";
 
 const DB_NAME = "lear-by-ai";
 const DB_VERSION = 1;
@@ -201,4 +202,3 @@ export async function resetStorageForTests(): Promise<void> {
     request.onblocked = () => resolve();
   });
 }
-

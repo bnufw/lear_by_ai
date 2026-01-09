@@ -36,7 +36,7 @@ describe("parseGitHubRepoUrl", () => {
 
 describe("selectRepoFiles", () => {
   it("prioritizes readme/docs/config/entrypoint and enforces caps", () => {
-    const tree = [
+    const tree: Array<{ path: string; type: "blob"; size: number }> = [
       { path: "README.md", type: "blob", size: 100 },
       { path: "docs/guide.md", type: "blob", size: 200 },
       { path: "package.json", type: "blob", size: 150 },
@@ -54,7 +54,7 @@ describe("selectRepoFiles", () => {
     });
 
     expect(result.ok).toBe(true);
-    if (result.ok) {
+    if (result.ok === true) {
       const paths = result.value.selected.map((item) => item.path);
       expect(paths).toEqual(["README.md", "docs/guide.md", "package.json"]);
     }
@@ -126,4 +126,3 @@ describe("fetchRepoContext", () => {
     }
   });
 });
-

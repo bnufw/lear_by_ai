@@ -1,4 +1,5 @@
 import type {
+  GitHubError,
   GitHubRepoRef,
   GitHubResult,
   RepoContext,
@@ -133,27 +134,35 @@ export function parseGitHubRepoUrl(input: string): GitHubResult<GitHubRepoRef> {
   }
 }
 
+type SelectionResult = GitHubResult<{
+  selected: Array<{ path: string; size: number; category: RepoFileCategory }>;
+  totalTreeFiles: number;
+  skippedCount: number;
+  warnings: string[];
+}>;
+
 export async function fetchRepoContext(
   input: string | GitHubRepoRef,
   options: RepoIngestOptions = {},
 ): Promise<GitHubResult<RepoContext>> {
-  const resolved = typeof input === "string" ? parseGitHubRepoUrl(input) : { ok: true, value: input };
-  if (!resolved.ok) return resolved;
+  const resolved: GitHubResult<GitHubRepoRef> =
+    typeof input === "string" ? parseGitHubRepoUrl(input) : { ok: true, value: input };
+  if (resolved.ok === false) return { ok: false, error: resolved.error };
 
   const repo = resolved.value;
   const config = { ...DEFAULT_OPTIONS, ...options };
 
   const repoInfo = await fetchRepoInfo(repo, config.timeoutMs);
-  if (!repoInfo.ok) return repoInfo;
+  if (repoInfo.ok === false) return { ok: false, error: repoInfo.error };
 
   const tree = await fetchRepoTree(repo, repoInfo.value.defaultBranch, config.timeoutMs);
-  if (!tree.ok) return tree;
+  if (tree.ok === false) return { ok: false, error: tree.error };
 
   const selection = selectRepoFiles(tree.value, config);
-  if (!selection.ok) return selection;
+  if (selection.ok === false) return { ok: false, error: selection.error };
 
   const files = await fetchSelectedFiles(repo, repoInfo.value.defaultBranch, selection.value.selected, config);
-  if (!files.ok) return files;
+  if (files.ok === false) return { ok: false, error: files.error };
 
   const stats = {
     totalTreeFiles: selection.value.totalTreeFiles,
@@ -215,7 +224,7 @@ async function fetchRepoTree(repo: GitHubRepoRef, branch: string, timeoutMs: num
   return { ok: true, value: tree };
 }
 
-function selectRepoFiles(tree: GitTreeEntry[], options: Required<RepoIngestOptions>) {
+function selectRepoFiles(tree: GitTreeEntry[], options: Required<RepoIngestOptions>): SelectionResult {
   const candidates = tree.filter((entry) => entry.type === "blob" && Boolean(entry.path));
   const scored = [];
   let skippedCount = 0;
@@ -259,21 +268,10 @@ function selectRepoFiles(tree: GitTreeEntry[], options: Required<RepoIngestOptio
   }
 
   if (!selected.length) {
-    return {
-      ok: false,
-      error: { code: "REPO_TOO_LARGE", message: "No eligible files found within size limits" },
-    };
+    return { ok: false, error: { code: "REPO_TOO_LARGE", message: "No eligible files found within size limits" } };
   }
 
-  return {
-    ok: true,
-    value: {
-      selected,
-      totalTreeFiles: candidates.length,
-      skippedCount,
-      warnings,
-    },
-  };
+  return { ok: true, value: { selected, totalTreeFiles: candidates.length, skippedCount, warnings } };
 }
 
 async function fetchSelectedFiles(
@@ -359,7 +357,7 @@ async function fetchWithTimeout(
   }
 }
 
-function mapGitHubError(response: Response, message: string): GitHubResult<never>["error"] {
+function mapGitHubError(response: Response, message: string): GitHubError {
   if (response.status === 404) {
     return { code: "NOT_FOUND", message: "Repository not found" };
   }
